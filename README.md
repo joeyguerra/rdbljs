@@ -43,7 +43,7 @@ Most reactive libraries ask you to learn a new template language or move your lo
 ## Install
 
 ```bash
-npm install rdbl
+bun add rdbl
 ```
 
 Or copy the single file directly — rdbl has no dependencies.
