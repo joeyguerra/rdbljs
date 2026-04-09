@@ -1,4 +1,4 @@
-import { bind, signal, computed, effect } from '/assets/rdbl.js'
+import { bind, signal, computed, effect } from 'assets/rdbl.js'
 
 const count = signal(0)
 const log   = document.getElementById('effect-log')

@@ -1,4 +1,4 @@
-import { bind, signal, computed, effect, getItemContext } from '/assets/rdbl.js'
+import { bind, signal, computed, effect, getItemContext } from 'assets/rdbl.js'
 
 // ── Helpers ─────────────────────────────────────────────────
 function makeTodo(text, done = false) {

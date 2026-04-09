@@ -1,4 +1,4 @@
-import { bind, signal, computed } from '/assets/rdbl.js'
+import { bind, signal, computed } from 'assets/rdbl.js'
 const query  = signal('')
 const length = computed(() => query().length)
 const root   = document.querySelector('#model-demo')

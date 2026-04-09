@@ -1,4 +1,4 @@
-import { bind, signal, computed } from '/assets/rdbl.js'
+import { bind, signal, computed } from 'assets/rdbl.js'
 
 // ── Dataset ──────────────────────────────────────────────────
 const MISSIONS = [
