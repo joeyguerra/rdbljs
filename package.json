@@ -15,9 +15,9 @@
   ],
   "scripts": {
     "test": "bun test",
-    "docs:build:github": "cp src/rdbl.js docs/pages/public/assets/rdbl.js && bunx @devchitchat/index97@1.1.0 build docs/pages --out dist --path-prefix /rdbljs/",
-    "docs:build": "cp src/rdbl.js docs/pages/public/assets/rdbl.js && bunx @devchitchat/index97@1.1.0 build docs/pages --out dist",
-    "docs:serve": "cp src/rdbl.js docs/pages/public/assets/rdbl.js && bunx @devchitchat/index97@1.1.0 build docs/pages --out dist && bunx @devchitchat/index97@1.1.0 serve dist"
+    "docs:build:github": "cp src/rdbl.js docs/pages/public/assets/rdbl.js && bunx @devchitchat/index97 build docs/pages --out dist --path-prefix /rdbljs/",
+    "docs:build": "cp src/rdbl.js docs/pages/public/assets/rdbl.js && bunx @devchitchat/index97 build docs/pages --out dist",
+    "docs:serve": "cp src/rdbl.js docs/pages/public/assets/rdbl.js && bunx @devchitchat/index97 build docs/pages --out dist && bunx @devchitchat/index97 serve dist"
   },
   "keywords": [
     "reactive",
