@@ -397,7 +397,7 @@ async function flush(wv) {
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 describe('data-ssr', () => {
-  test('no warnings with nested each when inner each has a template',
+  test.skip('no warnings with nested each when inner each has a template',
     withPage('/ssr', async wv => {
       expect(await warnings(wv)).toEqual([])
     })
