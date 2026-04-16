@@ -397,20 +397,13 @@ async function flush(wv) {
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 describe('data-ssr', () => {
-  test('does not warn when outer each has data-ssr and inner each is in SSR content',
+  test('no warnings with nested each when inner each has a template',
     withPage('/ssr', async wv => {
       expect(await warnings(wv)).toEqual([])
     })
   )
 
-    test('data-ssr preserves ssr content and template child',
-    withPage('/ssr', async wv => {
-      expect.stringContaining('each="channels" requires a <template> child')
-    })
-  )
-
-
-  test('warns when outer each has no data-ssr and inner each is missing a template',
+  test('warns when inner each is missing a template',
     withPage('/missing-inner-template', async wv => {
       expect(await warnings(wv)).toEqual([
         expect.stringContaining('each="channels" requires a <template> child')
