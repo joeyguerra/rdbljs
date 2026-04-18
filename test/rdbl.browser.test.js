@@ -61,6 +61,64 @@ const ROUTES = {
     bind(document.querySelector('[each="hubs"]'), scope, { dev: true })`
   ),
 
+  // Exact structure from user's Handlebars template.
+  // Two key rules for SSR with attr/cls directives:
+  //   1. Server must render the actual attribute value (href="{{url}}") alongside the binding
+  //   2. Inner each hosts need a <template> child so channel rows can hydrate and stay reactive
+  '/ssr-handlebars-hubs': makePage(
+    `<div each="hubs" key="hub_id" class="hub-group">
+      <div class="hub-header" data-key="1">
+        <span text="name" class="hub-name">Dev Hub</span>
+      </div>
+      <ul class="channel-list" each="channels" key="channel_id">
+        <li data-key="1">
+          <a href="/channels/general" attr="href:url" text="label" class="channel-link">general</a>
+        </li>
+        <template>
+          <li>
+            <a attr="href:url" text="label" class="channel-link"></a>
+          </li>
+        </template>
+      </ul>
+      <template>
+        <div class="hub-header">
+          <span text="name" class="hub-name"></span>
+        </div>
+        <ul class="channel-list" each="channels" key="channel_id">
+          <template>
+            <li>
+              <a attr="href:url" text="label" class="channel-link"></a>
+            </li>
+          </template>
+        </ul>
+      </template>
+    </div>`,
+    `const scope = {
+      hubs: signal([{
+        hub_id: 1, name: 'Dev Hub',
+        channels: signal([{ channel_id: 1, label: 'general', url: '/channels/general' }])
+      }])
+    }
+    bind(document.querySelector('[each="hubs"]'), scope, { dev: true })
+    window.__getHubName = () => document.querySelector('.hub-name').textContent
+    window.__getChannelLabel = () => document.querySelector('.channel-link').textContent
+    window.__getChannelHref = () => document.querySelector('.channel-link').getAttribute('href')`
+  ),
+
+  // data-key rows without a <template>: existing rows hydrate and become
+  // reactive via signal fields on the item; no new items can be added.
+  '/ssr-no-template-reactive': makePage(
+    `<ul id="list" each="items" key="id">
+      <li data-key="1" text="name">Alpha</li>
+      <li data-key="2" text="name">Beta</li>
+    </ul>`,
+    `const items = [{ id: 1, name: signal('Alpha') }, { id: 2, name: signal('Beta') }]
+    const scope = { items: signal(items) }
+    bind(document.getElementById('list'), scope, { dev: true })
+    window.__itemTexts = () => JSON.stringify([...document.querySelectorAll('li')].map(e => e.textContent))
+    window.__updateFirst = name => items[0].name.set(name)`
+  ),
+
   '/missing-inner-template': makePage(
     `<div each="hubs" key="hub_id">
       <template>
@@ -395,6 +453,48 @@ async function flush(wv) {
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
+
+describe('ssr-handlebars-hubs', () => {
+  test('no warnings after bind',
+    withPage('/ssr-handlebars-hubs', async wv => {
+      expect(await warnings(wv)).toEqual([])
+    })
+  )
+
+  test('hub name is preserved after bind',
+    withPage('/ssr-handlebars-hubs', async wv => {
+      expect(await wv.evaluate('window.__getHubName()')).toBe('Dev Hub')
+    })
+  )
+
+  test('channel label is preserved after bind',
+    withPage('/ssr-handlebars-hubs', async wv => {
+      expect(await wv.evaluate('window.__getChannelLabel()')).toBe('general')
+    })
+  )
+
+  test('channel href is preserved after bind',
+    withPage('/ssr-handlebars-hubs', async wv => {
+      expect(await wv.evaluate('window.__getChannelHref()')).toBe('/channels/general')
+    })
+  )
+})
+
+describe('each without template — data-key rows still reactive', () => {
+  test('SSR content preserved on bind',
+    withPage('/ssr-no-template-reactive', async wv => {
+      expect(JSON.parse(await wv.evaluate('window.__itemTexts()'))).toEqual(['Alpha', 'Beta'])
+    })
+  )
+
+  test('existing rows update reactively when signal changes',
+    withPage('/ssr-no-template-reactive', async wv => {
+      await wv.evaluate('window.__updateFirst("Alpha Updated")')
+      await flush(wv)
+      expect(JSON.parse(await wv.evaluate('window.__itemTexts()'))).toEqual(['Alpha Updated', 'Beta'])
+    })
+  )
+})
 
 describe('data-ssr', () => {
   test.skip('no warnings with nested each when inner each has a template',

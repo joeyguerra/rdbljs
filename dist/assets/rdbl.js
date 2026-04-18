@@ -216,6 +216,14 @@ function isReadable(v) {
   return typeof v === 'function' && (typeof v.set === 'function' || typeof v.peek === 'function')
 }
 
+// Returns true when an element is SSR-rendered content that should not be
+// stomped on the first effect run. Triggered by either:
+//   data-ssr  — explicit opt-in
+//   data-key  — the element is (or is inside) a keyed SSR row in a list
+function isSSRPreserved(el) {
+  return el.hasAttribute('data-ssr') || el.hasAttribute('data-key') || !!el.closest('[data-key]')
+}
+
 function resolve(obj, path) {
   const parts = String(path).split('.').map(s => s.trim()).filter(Boolean)
   let cur = obj
@@ -442,11 +450,13 @@ function bindText(root, scope, opt) {
     if (isManagedByEach(el)) continue
     if (!el.hasAttribute('text')) continue
     const path = el.getAttribute('text')
+    let skipFirst = isSSRPreserved(el) || el.textContent.trim() !== ''
 
     const stop = effect(() => {
       const v = readValue(scope, path)
       const value = readBoundValue(scope, path, el)
       if (value === undefined) warn(opt.dev, `text="${path}" resolved to undefined${bindingDebugContext(el)}`)
+      if (skipFirst) { skipFirst = false; return }
       el.textContent = value ?? ''
     })
     stops.push(stop)
@@ -461,9 +471,11 @@ function bindHtml(root, scope, opt) {
     if (isManagedByEach(el)) continue
     if (!el.hasAttribute('html')) continue
     const path = el.getAttribute('html')
+    let skipFirst = isSSRPreserved(el) || el.innerHTML.trim() !== ''
 
     const stop = effect(() => {
       const v = readBoundValue(scope, path, el)
+      if (skipFirst) { skipFirst = false; return }
       el.innerHTML = v ?? ''
     })
     stops.push(stop)
@@ -479,8 +491,10 @@ function bindShow(root, scope, opt) {
     if (!el.hasAttribute('show')) continue
     const path = el.getAttribute('show')
 
+    let skipFirst = isSSRPreserved(el)
     const stop = effect(() => {
       const v = !!readBoundValue(scope, path, el)
+      if (skipFirst) { skipFirst = false; return }
       if (isDialogElement(el)) {
         setDialogShown(el, v)
         return
@@ -494,24 +508,20 @@ function bindShow(root, scope, opt) {
 
 function bindClass(root, scope, opt) {
   const stops = []
-  for (const el of allElements(root)) {
-    if (shouldIgnore(el, opt.ignoreSelector)) continue
-    if (isManagedByEach(el)) continue
-    if (!el.hasAttribute('class')) continue
-
-    // NOTE: this collides with native class attr.
-    // If you want to keep native class= for static classnames,
-    // prefer `cls="path"` instead. For v1, we support `cls`.
-    // We'll honor `cls` and ignore `class` unless it's `cls`.
-  }
+  // NOTE: this collides with native class attr.
+  // If you want to keep native class= for static classnames,
+  // prefer `cls="path"` instead. For v1, we support `cls`.
+  // We'll honor `cls` and ignore `class` unless it's `cls`.
   // Prefer `cls`:
   for (const el of allElements(root)) {
     if (shouldIgnore(el, opt.ignoreSelector)) continue
     if (isManagedByEach(el)) continue
     if (!el.hasAttribute('cls')) continue
     const path = el.getAttribute('cls')
+    let skipFirst = isSSRPreserved(el)
     const stop = effect(() => {
       const v = readBoundValue(scope, path, el)
+      if (skipFirst) { skipFirst = false; return }
       if (typeof v === 'string') {
         el.className = v
       } else if (v && typeof v === 'object') {
@@ -535,9 +545,11 @@ function bindAttr(root, scope, opt) {
     if (!el.hasAttribute('attr')) continue
     const spec = el.getAttribute('attr')
     const pairs = parseAttrSpec(spec)
+    let skipFirst = isSSRPreserved(el)
     const stop = effect(() => {
-      for (const [name, path] of pairs) {
-        const v = readBoundValue(scope, path, el)
+      const values = pairs.map(([name, path]) => [name, readBoundValue(scope, path, el)])
+      if (skipFirst) { skipFirst = false; return }
+      for (const [name, v] of values) {
         if (v === false || v == null) el.removeAttribute(name)
         else el.setAttribute(name, String(v))
       }
@@ -575,8 +587,10 @@ function bindModel(root, scope, opt) {
     offs.push(() => el.removeEventListener(evt, handler))
 
     // state -> UI
+    let skipFirst = isSSRPreserved(el)
     const stop = effect(() => {
       const v = sig()
+      if (skipFirst) { skipFirst = false; return }
       setModelValue(el, v)
     })
     stops.push(stop)
@@ -639,50 +653,85 @@ function bindEvents(root, scope, opt, { getCtx }) {
 // - item scope provides item props + $item/$index (via proxy)
 // - bindSubtree is used to bind item content without rebinding the whole document
 // ─────────────────────────────────────────────────────────────
+
+// Group direct-child siblings of host by data-key attribute. The element
+// carrying data-key starts a new group; subsequent siblings without data-key
+// belong to the same group until the next data-key element or the template.
+function collectDataKeyGroups(host, tpl) {
+  const groups = []
+  let current = null
+  for (const child of Array.from(host.children)) {
+    if (child === tpl || child.tagName === 'TEMPLATE') break
+    if (child.hasAttribute('data-key')) {
+      if (current) groups.push(current)
+      current = { key: child.getAttribute('data-key'), nodes: [child] }
+    } else if (current) {
+      current.nodes.push(child)
+    }
+  }
+  if (current) groups.push(current)
+  return groups
+}
+
 function bindEach(root, scope, opt, { getCtx, bindSubtree }) {
   const stops = []
   const listDisposers = []
+  // Track each hosts we've set up so the allElements scan doesn't double-bind
+  // inner each hosts that hydrateEntry already bound via bindSubtree.
+  const processedEachHosts = new Set()
 
   for (const host of allElements(root)) {
     if (shouldIgnore(host, opt.ignoreSelector)) continue
     if (!host.hasAttribute('each')) continue
+    // Skip hosts removed from the DOM by a preceding effect (legacy data-ssr path).
+    if (!root.contains(host)) continue
+    // Skip inner each hosts already bound by a hydrateEntry → bindSubtree call.
+    if ([...processedEachHosts].some(p => p.contains(host))) continue
 
     const listPath = host.getAttribute('each')
     const keyPath = host.getAttribute('key') || 'id'
-    const tpl = host.querySelector('template')
-    if (!tpl) {
+    // Use direct-child template only — querySelector would find a <template>
+    // inside a data-key row before the host's own template.
+    const tpl = Array.from(host.children).find(el => el.tagName === 'TEMPLATE')
+
+    // Detect SSR-rendered rows by data-key on direct children.
+    // Must happen before DOM manipulation so we can see the original children.
+    const ssrGroups = collectDataKeyGroups(host, tpl)
+
+    if (!tpl && ssrGroups.length === 0) {
       warn(opt.dev, `each="${listPath}" requires a <template> child`, host)
       continue
     }
+    if (!tpl) {
+      warn(opt.dev, `each="${listPath}" has no <template> — existing rows will be reactive but new items cannot be added`, host)
+    }
+
+    processedEachHosts.add(host)
 
     // Prepare host
     const marker = document.createComment(`each:${listPath}`)
-    host.innerHTML = ''
-    host.append(marker, tpl)
+    if (ssrGroups.length > 0) {
+      // Hydration mode: preserve existing rows, insert marker before them.
+      // The live Map will be pre-populated from these rows below.
+      host.insertBefore(marker, host.firstChild)
+      if (tpl) host.appendChild(tpl)
+    } else {
+      host.innerHTML = ''
+      host.append(marker, tpl)
+    }
 
     let live = new Map() // key -> entry
 
     function itemKey(item) {
-      const k = resolve(item, keyPath)
-      return k
+      return resolve(item, keyPath)
     }
 
-    function createEntry(item, index) {
+    // Shared entry construction. tmp must already contain the item's nodes.
+    // For createEntry tmp holds cloned template content; for hydrateEntry it
+    // holds the SSR nodes temporarily so bindSubtree can scan them.
+    function makeEntry(tmp, item, index) {
       let currentItem = item
-      const frag = tpl.content.cloneNode(true)
-
-      // Bind into a temporary container so bind() can query within it
-      const tmp = document.createElement('div')
-      tmp.appendChild(frag)
-
-      // Item scope: item props first, then parent scope.
-      // Also expose $item/$index for handlers that want it without expressions in HTML.
-      const itemScope = createScope(scope, {
-        $item: item,
-        $index: index,
-      })
-
-      // Provide direct property access to item fields:
+      const itemScope = createScope(scope, { $item: item, $index: index })
       const proxyScope = new Proxy(itemScope, {
         get(target, prop) {
           if (prop in target) return target[prop]
@@ -694,33 +743,25 @@ function bindEach(root, scope, opt, { getCtx, bindSubtree }) {
         }
       })
 
-      // Collect nodes
       const nodes = Array.from(tmp.childNodes)
 
       function attachItemContextTree(node, ctx) {
         if (!(node instanceof Element)) return
         setItemContext(node, ctx)
-        for (const child of Array.from(node.children || [])) {
-          attachItemContextTree(child, ctx)
-        }
+        for (const child of Array.from(node.children || [])) attachItemContextTree(child, ctx)
       }
-
       function attachBoundScopeTree(node, scopeForNode) {
         if (!(node instanceof Element)) return
         setBoundScope(node, scopeForNode)
-        for (const child of Array.from(node.children || [])) {
-          attachBoundScopeTree(child, scopeForNode)
-        }
+        for (const child of Array.from(node.children || [])) attachBoundScopeTree(child, scopeForNode)
       }
 
-      // Attach item context before binding so first-run effects can report row context.
       const initialCtx = { item, index, key: itemKey(item), host }
       for (const n of nodes) {
         attachItemContextTree(n, initialCtx)
         attachBoundScopeTree(n, proxyScope)
       }
 
-      // Bind the item subtree (no autoBind here)
       const binding = bindSubtree(tmp, proxyScope)
 
       return {
@@ -735,6 +776,38 @@ function bindEach(root, scope, opt, { getCtx, bindSubtree }) {
           for (const n of this.nodes) {
             if (n instanceof Element) setItemContext(n, { item: nextItem, index: nextIndex, key, host })
           }
+        }
+      }
+    }
+
+    function createEntry(item, index) {
+      const tmp = document.createElement('div')
+      tmp.appendChild(tpl.content.cloneNode(true))
+      return makeEntry(tmp, item, index)
+    }
+
+    // Bind existing SSR nodes in-place by temporarily moving them into a
+    // container (same trick createEntry uses with cloned template content).
+    function hydrateEntry(nodes, item, index) {
+      const tmp = document.createElement('div')
+      const parent = nodes[0].parentNode
+      const after = nodes[nodes.length - 1].nextSibling
+      nodes.forEach(n => tmp.appendChild(n))
+      const entry = makeEntry(tmp, item, index)
+      nodes.forEach(n => parent.insertBefore(n, after))
+      return entry
+    }
+
+    // Pre-populate live from SSR-rendered data-key rows so the first effect
+    // run is a diff against already-hydrated entries (no DOM replacement).
+    if (ssrGroups.length > 0) {
+      const currentItems = readValue(scope, listPath) || []
+      if (Array.isArray(currentItems)) {
+        for (const group of ssrGroups) {
+          const item = currentItems.find(i => String(itemKey(i)) === group.key)
+          if (!item) continue
+          const entry = hydrateEntry(group.nodes, item, currentItems.indexOf(item))
+          live.set(itemKey(item), entry)
         }
       }
     }
@@ -759,14 +832,24 @@ function bindEach(root, scope, opt, { getCtx, bindSubtree }) {
 
         let entry = live.get(k)
         if (!entry) {
+          if (!tpl) {
+            warn(opt.dev, `each="${listPath}" cannot render new item — no <template> child`, host)
+            continue
+          }
           entry = createEntry(item, i)
         } else {
           // If keyed item identity changed, recreate subtree bindings so
           // non-reactive plain item fields are read from the new object.
           if (entry.item !== item) {
-            try { entry.binding?.dispose?.() } catch {}
-            for (const n of entry.nodes) n.remove()
-            entry = createEntry(item, i)
+            if (tpl) {
+              try { entry.binding?.dispose?.() } catch {}
+              for (const n of entry.nodes) n.remove()
+              entry = createEntry(item, i)
+            } else {
+              // No template — can't recreate, but update item reference so
+              // signal-based fields still track the new object.
+              entry.setItem(item, i, k)
+            }
           } else {
             entry.setItem(item, i, k)
           }
@@ -780,10 +863,10 @@ function bindEach(root, scope, opt, { getCtx, bindSubtree }) {
         for (const n of entry.nodes) frag.appendChild(n)
       }
 
-      // Clear rendered nodes between marker and template
+      // Clear rendered nodes between marker and template (or end of host if no template)
       while (marker.nextSibling && marker.nextSibling !== tpl) marker.nextSibling.remove()
 
-      host.insertBefore(frag, tpl)
+      host.insertBefore(frag, tpl ?? null)
 
       // Dispose removed
       for (const [k, entry] of live.entries()) {
@@ -815,7 +898,7 @@ function bindEach(root, scope, opt, { getCtx, bindSubtree }) {
   }
 }
 
-async function init(window, roots) {
+export async function init(window, roots) {
   if (!roots) {
     roots = [...document.querySelectorAll('[island]')]
   }

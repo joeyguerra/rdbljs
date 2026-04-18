@@ -693,15 +693,20 @@ function bindEach(root, scope, opt, { getCtx, bindSubtree }) {
     // Use direct-child template only — querySelector would find a <template>
     // inside a data-key row before the host's own template.
     const tpl = Array.from(host.children).find(el => el.tagName === 'TEMPLATE')
-    if (!tpl) {
+
+    // Detect SSR-rendered rows by data-key on direct children.
+    // Must happen before DOM manipulation so we can see the original children.
+    const ssrGroups = collectDataKeyGroups(host, tpl)
+
+    if (!tpl && ssrGroups.length === 0) {
       warn(opt.dev, `each="${listPath}" requires a <template> child`, host)
       continue
     }
+    if (!tpl) {
+      warn(opt.dev, `each="${listPath}" has no <template> — existing rows will be reactive but new items cannot be added`, host)
+    }
 
     processedEachHosts.add(host)
-
-    // Detect SSR-rendered rows by data-key on direct children.
-    const ssrGroups = collectDataKeyGroups(host, tpl)
 
     // Prepare host
     const marker = document.createComment(`each:${listPath}`)
@@ -709,7 +714,7 @@ function bindEach(root, scope, opt, { getCtx, bindSubtree }) {
       // Hydration mode: preserve existing rows, insert marker before them.
       // The live Map will be pre-populated from these rows below.
       host.insertBefore(marker, host.firstChild)
-      host.appendChild(tpl)
+      if (tpl) host.appendChild(tpl)
     } else {
       host.innerHTML = ''
       host.append(marker, tpl)
@@ -827,14 +832,24 @@ function bindEach(root, scope, opt, { getCtx, bindSubtree }) {
 
         let entry = live.get(k)
         if (!entry) {
+          if (!tpl) {
+            warn(opt.dev, `each="${listPath}" cannot render new item — no <template> child`, host)
+            continue
+          }
           entry = createEntry(item, i)
         } else {
           // If keyed item identity changed, recreate subtree bindings so
           // non-reactive plain item fields are read from the new object.
           if (entry.item !== item) {
-            try { entry.binding?.dispose?.() } catch {}
-            for (const n of entry.nodes) n.remove()
-            entry = createEntry(item, i)
+            if (tpl) {
+              try { entry.binding?.dispose?.() } catch {}
+              for (const n of entry.nodes) n.remove()
+              entry = createEntry(item, i)
+            } else {
+              // No template — can't recreate, but update item reference so
+              // signal-based fields still track the new object.
+              entry.setItem(item, i, k)
+            }
           } else {
             entry.setItem(item, i, k)
           }
@@ -848,10 +863,10 @@ function bindEach(root, scope, opt, { getCtx, bindSubtree }) {
         for (const n of entry.nodes) frag.appendChild(n)
       }
 
-      // Clear rendered nodes between marker and template
+      // Clear rendered nodes between marker and template (or end of host if no template)
       while (marker.nextSibling && marker.nextSibling !== tpl) marker.nextSibling.remove()
 
-      host.insertBefore(frag, tpl)
+      host.insertBefore(frag, tpl ?? null)
 
       // Dispose removed
       for (const [k, entry] of live.entries()) {
