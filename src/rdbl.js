@@ -864,7 +864,10 @@ function bindEach(root, scope, opt, { getCtx, bindSubtree }) {
       }
 
       // Clear rendered nodes between marker and template (or end of host if no template)
-      while (marker.nextSibling && marker.nextSibling !== tpl) marker.nextSibling.remove()
+      // Comment this out because I'm not sure it's required and it's stomping over
+      // Server side rendered HTML. But at some point, we should be able to delete this line
+      // if it's not breaking anything.
+      // while (marker.nextSibling && marker.nextSibling !== tpl) marker.nextSibling.remove()
 
       host.insertBefore(frag, tpl ?? null)
 
