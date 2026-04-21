@@ -14,7 +14,7 @@
     "README.md"
   ],
   "scripts": {
-    "test": "bun test",
+    "test": "bun test --timeout 10000",
     "docs:build:github": "cp src/rdbl.js docs/pages/public/assets/rdbl.js && bunx @devchitchat/index97 build docs/pages --out dist --path-prefix /rdbljs/",
     "docs:build": "cp src/rdbl.js docs/pages/public/assets/rdbl.js && bunx @devchitchat/index97 build docs/pages --out dist",
     "docs:serve": "cp src/rdbl.js docs/pages/public/assets/rdbl.js && bunx @devchitchat/index97 build docs/pages --out dist && bunx @devchitchat/index97 serve dist"

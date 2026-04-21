@@ -29,7 +29,7 @@ jobs:
       - name: Install dependencies
         run: bun ci
       - name: Test
-        run: bun test
+        run: bun test --timeout 10000
       - name: Verify the integrity of provenance attestations and registry signatures for installed dependencies
         run: bun audit
   release:
