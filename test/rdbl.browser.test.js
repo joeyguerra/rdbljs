@@ -10,12 +10,16 @@ ${body}
 <script type="module">
   const _w = []
   const _logs = []
+  const _errors = []
   const _orig = console.warn
   const _origLog = console.log
+  const _origError = console.error
   console.warn = (...a) => { _w.push(a.map(String).join(' ')); _orig(...a) }
-  console.log = (...a) => { _logs.push(a.map(String).join(' ')); _origLog(...a)}
+  console.log = (...a) => { _logs.push([...a]); _origLog(...a)}
+  console.error = (...a) => { _errors.push(a.map(String).join(' ')); _origError(...a)}
   window.__rdblWarnings = () => JSON.stringify(_w.filter(w => w.includes('[rdbljs]')))
-  window.__rdblLogs = () => JSON.stringify(_logs.filter(w => w.includes('[rdbljs]')))
+  window.__rdblLogs = () => JSON.stringify(_logs)
+  window.__rdblErrors = () => JSON.stringify(_errors)
   ${rdblSrc.replace(/<\/script>/g, '<\\/script>')}
 
   ${script}
@@ -29,94 +33,149 @@ const ROUTES = {
 
   // ── data-ssr ──────────────────────────────────────────────────────────────
 
-  '/ssr': makePage(
-    `<div each="hubs" key="hub_id" class="hub-group">
-      <div class="hub-header">
-        <span text="name" class="hub-name">Dev Hub</span>
-      </div>
-      <ul class="channel-list" each="channels" key="channel_id">
-        <li cls="channelItemClass">
-          <a attr="href:url" text="label" class="channel-link">general</a>
-        </li>
-      </ul>
-      <template>
-        <div class="hub-header">
-          <span text="name" class="hub-name"></span>
-        </div>
-        <ul class="channel-list" each="channels" key="channel_id">
-          <template>
-            <li cls="channelItemClass">
-              <a attr="href:url" text="label" class="channel-link"></a>
-            </li>
-          </template>
+  '/ssr-bind-each': makePage(
+    `<section each="hubs" key="hub_id">
+      <details data-key="hub_1" open>
+        <summary text="name">Dev Hub</summary>
+        <ul each="channels" key="channel_id">
+          <li data-key="channel_1">
+            <a attr="href:url" text="name" href="/channels/reactive">reactive</a>
+          </li>
         </ul>
-      </template>
-    </div>`,
-    `const scope = {
-      hubs: signal([{
-        hub_id: 1, name: 'Dev Hub', channelItemClass: 'channel-item',
-        channels: [{ channel_id: 1, label: 'general', url: '/channels/general' }]
-      }])
+      </details>
+      <details data-key="hub_2" open>
+        <summary text="name">General Hub</summary>
+        <ul each="channels" key="channel_id">
+          <li data-key="channel_2">
+            <a attr="href:url" text="name" href="/channels/announcements">announcements</a>
+          </li>
+        </ul>
+      </details>
+    </section>`,
+    `
+    const root = document.querySelector('[each="hubs"]')
+    // Populate scope so the SSR content doesn't get stomped on.
+    const hubs = signal(Array.from(root.querySelectorAll('details[data-key]')).map(el => {
+      return {
+        hub_id: el.dataset.key,
+        name: el.querySelector('summary').textContent,
+        channels: Array.from(el.querySelectorAll('li')).map(li => {
+          return {
+            channel_id: li.dataset.key,
+            name: li.querySelector('a').textContent,
+            url: li.querySelector('a').href
+          }
+        })
+      }
+    }))
+    const scope = { hubs }
+    try {
+      bindEach(root, scope, {dev: true}, { getCtx: (el) => Context.read(el),  bindSubtree: (subRoot, subScope = scope) => {
+        return bind(subRoot, subScope, { dev: true, autoBind: false })
+      }})
+    } catch(e) {
+      console.log('error', e.message)
     }
+    `
+  ),
+  '/ssr': makePage(
+    `<section each="hubs" key="hub_id">
+      <details data-key="hub_1">
+        <summary text="name">Dev Hub</summary>
+        <ul each="channels" key="channel_id">
+          <li data-key="channel_1">
+            <a attr="href:url" text="name" href="/channels/reactive">reactive</a>
+          </li>
+        </ul>
+      </details>
+      <details data-key="hub_2">
+        <summary text="name">General Hub</summary>
+        <ul each="channels" key="channel_id">
+          <li data-key="channel_2">
+            <a attr="href:url" text="name" href="/channels/announcements">announcements</a>
+          </li>
+        </ul>
+      </details>
+    </section>`,
+    `
+    const root = document.querySelector('[each="hubs"]')
+    // Populate scope so the SSR content doesn't get stomped on.
+    const hubs = signal(Array.from(root.querySelectorAll('details[data-key]')).map(el => {
+      return {
+        hub_id: el.dataset.key,
+        name: el.querySelector('summary').textContent,
+        channels: Array.from(el.querySelectorAll('li')).map(li => {
+          return {
+            channel_id: li.dataset.key,
+            name: li.querySelector('a').textContent,
+            url: li.querySelector('a').href
+          }
+        })
+      }
+    }))
+    const scope = { hubs }
     bind(document.querySelector('[each="hubs"]'), scope, { dev: true })`
   ),
-
-  // Exact structure from user's Handlebars template.
-  // Two key rules for SSR with attr/cls directives:
-  //   1. Server must render the actual attribute value (href="{{url}}") alongside the binding
-  //   2. Inner each hosts need a <template> child so channel rows can hydrate and stay reactive
   '/ssr-handlebars-hubs': makePage(
-    `<div each="hubs" key="hub_id" class="hub-group">
-      <div class="hub-header" data-key="1">
-        <span text="name" class="hub-name">Dev Hub</span>
-      </div>
-      <ul class="channel-list" each="channels" key="channel_id">
-        <li data-key="1">
-          <a href="/channels/general" attr="href:url" text="label" class="channel-link">general</a>
-        </li>
-        <template>
-          <li>
-            <a attr="href:url" text="label" class="channel-link"></a>
+    `<div each="hubs" key="hub_id">
+      <div data-key="1">
+        <h1 text="name" class="hub-name">Dev Hub</h1>
+        <ul each="channels" key="channel_id">
+          <li data-key="1">
+            <a href="/channels/general" attr="href:url" text="name" class="channel-link">general</a>
           </li>
-        </template>
-      </ul>
-      <template>
-        <div class="hub-header">
-          <span text="name" class="hub-name"></span>
-        </div>
-        <ul class="channel-list" each="channels" key="channel_id">
-          <template>
-            <li>
-              <a attr="href:url" text="label" class="channel-link"></a>
-            </li>
-          </template>
         </ul>
-      </template>
+      </div>
     </div>`,
-    `const scope = {
-      hubs: signal([{
-        hub_id: 1, name: 'Dev Hub',
-        channels: signal([{ channel_id: 1, label: 'general', url: '/channels/general' }])
-      }])
-    }
-    bind(document.querySelector('[each="hubs"]'), scope, { dev: true })
-    window.__getHubName = () => document.querySelector('.hub-name').textContent
-    window.__getChannelLabel = () => document.querySelector('.channel-link').textContent
-    window.__getChannelHref = () => document.querySelector('.channel-link').getAttribute('href')`
+    `
+    const root = document.querySelector('[each="hubs"]')
+    // Populate scope so the SSR content doesn't get stomped on.
+    const hubs = signal(Array.from(root.querySelectorAll('div[data-key]')).map(el => {
+      return {
+        hub_id: el.dataset.key,
+        name: el.querySelector('h1').textContent,
+        channels: Array.from(el.querySelectorAll('li')).map(li => {
+          return {
+            channel_id: li.dataset.key,
+            name: li.querySelector('a').textContent,
+            url: li.querySelector('a').href
+          }
+        })
+      }
+    }))
+    const scope = { hubs }
+    bind(root, scope, { dev: true })
+    window.__getHubName = () => root.querySelector('.hub-name').textContent
+    window.__getChannelLabel = () => root.querySelector('.channel-link').textContent
+    window.__getChannelHref = () => root.querySelector('.channel-link').getAttribute('href')`
   ),
 
-  // data-key rows without a <template>: existing rows hydrate and become
-  // reactive via signal fields on the item; no new items can be added.
+  // data-key rows with no <template> — auto-generate template from first SSR row.
+  // New items can be added; existing rows hydrate reactively.
   '/ssr-no-template-reactive': makePage(
     `<ul id="list" each="items" key="id">
       <li data-key="1" text="name">Alpha</li>
       <li data-key="2" text="name">Beta</li>
     </ul>`,
-    `const items = [{ id: 1, name: signal('Alpha') }, { id: 2, name: signal('Beta') }]
-    const scope = { items: signal(items) }
+    `const scope = { items: signal([{ id: 1, name: 'Alpha' }, { id: 2, name: 'Beta' }]) }
     bind(document.getElementById('list'), scope, { dev: true })
     window.__itemTexts = () => JSON.stringify([...document.querySelectorAll('li')].map(e => e.textContent))
-    window.__updateFirst = name => items[0].name.set(name)`
+    window.__updateFirst = name => scope.items.set([{ id: 1, name }, ...scope.items().slice(1)])
+    window.__addItem = () => scope.items.set([...scope.items(), { id: 3, name: 'Gamma' }])`
+  ),
+
+  // Trailing non-data-key element used as template (no <template> tag needed).
+  // The bare <li> at the bottom of the channel list is the template for new channels.
+  '/ssr-trailing-template': makePage(
+    `<ul id="list" each="items" key="id">
+      <li data-key="1" text="name">Alpha</li>
+      <li data-key="2" text="name">Beta</li>
+      <li text="name"></li>
+    </ul>`,
+    `const scope = { items: signal([{ id: 1, name: 'Alpha' }, { id: 2, name: 'Beta' }]) }
+    bind(document.getElementById('list'), scope, { dev: true })
+    window.__itemTexts = () => JSON.stringify([...document.querySelectorAll('li')].map(e => e.textContent))
+    window.__addItem = () => scope.items.set([...scope.items(), { id: 3, name: 'Gamma' }])`
   ),
 
   '/missing-inner-template': makePage(
@@ -429,7 +488,25 @@ const webviewOptions = process.platform !== 'darwin' ? { backend: 'chrome' } : {
 
 function withPage(path, fn) {
   return async () => {
-    const wv = new Bun.WebView({ url: `http://localhost:${server.port}${path}`, ...webviewOptions })
+    const wv = new Bun.WebView({ url: `http://localhost:${server.port}${path}`,
+      ...webviewOptions
+    })
+    await new Promise(r => { wv.onNavigated = r })
+    await wv.evaluate('new Promise(r => setTimeout(r, 50))')
+    try {
+      await fn(wv)
+    } finally {
+      wv.close()
+    }
+  }
+}
+
+function withPageAndPipeToConsole(path, fn) {
+  return async () => {
+    const wv = new Bun.WebView({ url: `http://localhost:${server.port}${path}`,
+      ...webviewOptions,
+      console: globalThis.console
+    })
     await new Promise(r => { wv.onNavigated = r })
     await wv.evaluate('new Promise(r => setTimeout(r, 50))')
     try {
@@ -442,10 +519,6 @@ function withPage(path, fn) {
 
 async function warnings(wv) {
   return JSON.parse(await wv.evaluate('window.__rdblWarnings()'))
-}
-
-async function logs(wv) {
-  return JSON.parse(await wv.evaluate('window.__rdblLogs()'))
 }
 
 async function flush(wv) {
@@ -480,24 +553,57 @@ describe('ssr-handlebars-hubs', () => {
   )
 })
 
-describe('each without template — data-key rows still reactive', () => {
+describe('each without template — auto-generates from first SSR row', () => {
   test('SSR content preserved on bind',
     withPage('/ssr-no-template-reactive', async wv => {
       expect(JSON.parse(await wv.evaluate('window.__itemTexts()'))).toEqual(['Alpha', 'Beta'])
     })
   )
 
-  test('existing rows update reactively when signal changes',
+  test('existing rows update when signal item is replaced',
     withPage('/ssr-no-template-reactive', async wv => {
       await wv.evaluate('window.__updateFirst("Alpha Updated")')
       await flush(wv)
       expect(JSON.parse(await wv.evaluate('window.__itemTexts()'))).toEqual(['Alpha Updated', 'Beta'])
     })
   )
+
+  test('new items can be added using the auto-generated template',
+    withPage('/ssr-no-template-reactive', async wv => {
+      await wv.evaluate('window.__addItem()')
+      await flush(wv)
+      expect(JSON.parse(await wv.evaluate('window.__itemTexts()'))).toEqual(['Alpha', 'Beta', 'Gamma'])
+    })
+  )
+})
+
+describe('each — trailing non-data-key element used as template', () => {
+  test('SSR rows preserved, trailing element hidden (moved to template)',
+    withPage('/ssr-trailing-template', async wv => {
+      expect(JSON.parse(await wv.evaluate('window.__itemTexts()'))).toEqual(['Alpha', 'Beta'])
+    })
+  )
+
+  test('new items added using the trailing element as template',
+    withPage('/ssr-trailing-template', async wv => {
+      await wv.evaluate('window.__addItem()')
+      await flush(wv)
+      expect(JSON.parse(await wv.evaluate('window.__itemTexts()'))).toEqual(['Alpha', 'Beta', 'Gamma'])
+    })
+  )
 })
 
 describe('data-ssr', () => {
-  test.skip('no warnings with nested each when inner each has a template',
+  test('bindEach',
+    withPageAndPipeToConsole('/ssr-bind-each', async wv => {
+      const png = await wv.screenshot()
+      await Bun.write('test/page.png', png)
+      const details = await wv.evaluate('document.querySelector("section").outerHTML')
+      expect(details).toContain('<details data-key="hub_1"')
+    })
+  )
+
+  test('no warnings when each host has a template and inner each has a template',
     withPage('/ssr', async wv => {
       expect(await warnings(wv)).toEqual([])
     })

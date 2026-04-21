@@ -654,26 +654,82 @@ function bindEvents(root, scope, opt, { getCtx }) {
 // - bindSubtree is used to bind item content without rebinding the whole document
 // ─────────────────────────────────────────────────────────────
 
-// Group direct-child siblings of host by data-key attribute. The element
-// carrying data-key starts a new group; subsequent siblings without data-key
-// belong to the same group until the next data-key element or the template.
+// Group direct-child siblings of host by data-key attribute.
+//
+// When tpl is provided (explicit <template>):
+//   Non-data-key siblings belong to the preceding group (multi-element rows).
+//   Returns { groups, trailing: [] }.
+//
+// When tpl is null (no explicit <template>):
+//   Non-data-key elements after the last data-key group are returned as
+//   `trailing` — they serve as the auto-template for new items.
+//   Non-data-key elements between data-key siblings still belong to their group.
 function collectDataKeyGroups(host, tpl) {
+  const notTemplates = Array.from(host.children).filter(child => child !== tpl && child.tagName !== 'TEMPLATE')
+
+  if (tpl) {
+    // Explicit template present: original grouping — non-data-key after data-key
+    // belongs to the current group (supports multi-element rows).
+    const groups = []
+    let current = null
+    for (const child of notTemplates) {
+      if (child.dataset.key) {
+        if (current) groups.push(current)
+        current = { key: child.getAttribute('data-key'), nodes: [child] }
+      } else if (current) {
+        current.nodes.push(child)
+      }
+    }
+    if (current) groups.push(current)
+    return { groups, trailing: [] }
+  }
+
+  // No explicit template: find the last data-key index.
+  // Children after the last data-key are trailing (auto-template candidates).
+  let lastDkIdx = -1
+  for (let i = 0; i < notTemplates.length; i++) {
+    if (notTemplates[i].dataset.key !== undefined) lastDkIdx = i
+  }
+
   const groups = []
   let current = null
-  for (const child of Array.from(host.children)) {
-    if (child === tpl || child.tagName === 'TEMPLATE') break
-    if (child.hasAttribute('data-key')) {
+  for (let i = 0; i <= lastDkIdx; i++) {
+    const child = notTemplates[i]
+    if (child.dataset.key) {
       if (current) groups.push(current)
-      current = { key: child.getAttribute('data-key'), nodes: [child] }
+      current = { key: child.dataset.key, nodes: [child] }
     } else if (current) {
       current.nodes.push(child)
     }
   }
   if (current) groups.push(current)
-  return groups
+  const trailing = lastDkIdx >= 0 ? notTemplates.slice(lastDkIdx + 1) : []
+  return { groups, trailing }
 }
 
-function bindEach(root, scope, opt, { getCtx, bindSubtree }) {
+// Prepare a cloned node to serve as a template for new items by stripping
+// SSR-rendered content while preserving the binding attributes and structure.
+// For nested each hosts, removes their data-key rows (SSR rows) so new items
+// produced by those hosts start empty.
+function clearNodeForTemplate(el) {
+  if (!(el instanceof Element)) return
+  el.removeAttribute('data-key')
+  if (el.hasAttribute('text')) el.textContent = ''
+  if (el.hasAttribute('html')) el.innerHTML = ''
+  if (el.hasAttribute('attr')) {
+    for (const [name] of parseAttrSpec(el.getAttribute('attr'))) el.removeAttribute(name)
+  }
+  if (el.hasAttribute('each')) {
+    // Remove SSR rows from nested each hosts; keep trailing (template) rows.
+    for (const child of Array.from(el.children)) {
+      if (child.hasAttribute('data-key')) child.remove()
+    }
+    return // don't recurse — the nested each will bind its own children
+  }
+  for (const child of Array.from(el.children)) clearNodeForTemplate(child)
+}
+
+export function bindEach(root, scope, opt, { getCtx, bindSubtree }) {
   const stops = []
   const listDisposers = []
   // Track each hosts we've set up so the allElements scan doesn't double-bind
@@ -692,18 +748,34 @@ function bindEach(root, scope, opt, { getCtx, bindSubtree }) {
     const keyPath = host.getAttribute('key') || 'id'
     // Use direct-child template only — querySelector would find a <template>
     // inside a data-key row before the host's own template.
-    const tpl = Array.from(host.children).find(el => el.tagName === 'TEMPLATE')
+    let tpl = Array.from(host.children).find(el => el.tagName === 'TEMPLATE')
 
     // Detect SSR-rendered rows by data-key on direct children.
     // Must happen before DOM manipulation so we can see the original children.
-    const ssrGroups = collectDataKeyGroups(host, tpl)
+    const { groups: ssrGroups, trailing } = collectDataKeyGroups(host, tpl)
 
-    if (!tpl && ssrGroups.length === 0) {
-      warn(opt.dev, `each="${listPath}" requires a <template> child`, host)
-      continue
-    }
     if (!tpl) {
-      warn(opt.dev, `each="${listPath}" has no <template> — existing rows will be reactive but new items cannot be added`, host)
+      if (ssrGroups.length === 0) {
+        warn(opt.dev, `each="${listPath}" requires a <template> child`, host)
+        continue
+      }
+      // Resolve template from trailing non-data-key children, or auto-generate
+      // by cloning and clearing the first SSR row.
+      tpl = document.createElement('template')
+      if (trailing.length > 0) {
+        // Developer-supplied trailing element(s) — adopt them as template content.
+        trailing.forEach(n => {
+          tpl.content.appendChild(n)
+        })
+      } else {
+        // No trailing element: synthesize by cloning + clearing the first SSR group.
+        ssrGroups[0].nodes.forEach(n => {
+          const clone = n.cloneNode(true)
+          clearNodeForTemplate(clone)
+          tpl.content.appendChild(clone)
+        })
+      }
+      host.appendChild(tpl)
     }
 
     processedEachHosts.add(host)
@@ -714,7 +786,7 @@ function bindEach(root, scope, opt, { getCtx, bindSubtree }) {
       // Hydration mode: preserve existing rows, insert marker before them.
       // The live Map will be pre-populated from these rows below.
       host.insertBefore(marker, host.firstChild)
-      if (tpl) host.appendChild(tpl)
+      host.appendChild(tpl)
     } else {
       host.innerHTML = ''
       host.append(marker, tpl)
@@ -832,24 +904,14 @@ function bindEach(root, scope, opt, { getCtx, bindSubtree }) {
 
         let entry = live.get(k)
         if (!entry) {
-          if (!tpl) {
-            warn(opt.dev, `each="${listPath}" cannot render new item — no <template> child`, host)
-            continue
-          }
           entry = createEntry(item, i)
         } else {
           // If keyed item identity changed, recreate subtree bindings so
           // non-reactive plain item fields are read from the new object.
           if (entry.item !== item) {
-            if (tpl) {
-              try { entry.binding?.dispose?.() } catch {}
-              for (const n of entry.nodes) n.remove()
-              entry = createEntry(item, i)
-            } else {
-              // No template — can't recreate, but update item reference so
-              // signal-based fields still track the new object.
-              entry.setItem(item, i, k)
-            }
+            try { entry.binding?.dispose?.() } catch {}
+            for (const n of entry.nodes) n.remove()
+            entry = createEntry(item, i)
           } else {
             entry.setItem(item, i, k)
           }
@@ -863,13 +925,10 @@ function bindEach(root, scope, opt, { getCtx, bindSubtree }) {
         for (const n of entry.nodes) frag.appendChild(n)
       }
 
-      // Clear rendered nodes between marker and template (or end of host if no template)
-      // Comment this out because I'm not sure it's required and it's stomping over
-      // Server side rendered HTML. But at some point, we should be able to delete this line
-      // if it's not breaking anything.
-      // while (marker.nextSibling && marker.nextSibling !== tpl) marker.nextSibling.remove()
+      // Clear rendered nodes between marker and template
+      while (marker.nextSibling && marker.nextSibling !== tpl) marker.nextSibling.remove()
 
-      host.insertBefore(frag, tpl ?? null)
+      host.insertBefore(frag, tpl)
 
       // Dispose removed
       for (const [k, entry] of live.entries()) {
