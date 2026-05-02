@@ -707,6 +707,37 @@ function collectDataKeyGroups(host, tpl) {
   return { groups, trailing }
 }
 
+// rdbljs-owned data-* suffixes that must never be touched by syncDataAttrs.
+const RDBLJS_DATA_SUFFIXES = new Set(['key', 'ssr', 'no-bind'])
+
+/**
+ * Walk `el` and its element descendants. For every `data-*` attribute whose
+ * suffix (after "data-") is not an rdbljs reserved word, derive a property
+ * name by replacing hyphens with underscores and look it up in `item`. If a
+ * matching property exists, write it back to the attribute (or remove it when
+ * the value is null/undefined).
+ *
+ * This keeps plain `data-foo-bar="{{foo_bar}}"` attributes correct when rdbljs
+ * creates new list entries from a cloned template: clearNodeForTemplate strips
+ * data-key but leaves other data-* attributes at their SSR values, so without
+ * this pass a new item would inherit stale attribute values from the first row.
+ */
+function syncDataAttrs(el, item) {
+  if (!(el instanceof Element) || !item || typeof item !== 'object') return
+  for (const { name } of Array.from(el.attributes)) {
+    if (!name.startsWith('data-')) continue
+    const suffix = name.slice(5)
+    if (RDBLJS_DATA_SUFFIXES.has(suffix)) continue
+    const prop = suffix.replace(/-/g, '_')
+    if (Object.prototype.hasOwnProperty.call(item, prop)) {
+      const val = item[prop]
+      if (val == null) el.removeAttribute(name)
+      else el.setAttribute(name, String(val))
+    }
+  }
+  for (const child of Array.from(el.children)) syncDataAttrs(child, item)
+}
+
 // Prepare a cloned node to serve as a template for new items by stripping
 // SSR-rendered content while preserving the binding attributes and structure.
 // For nested each hosts, removes their data-key rows (SSR rows) so new items
@@ -857,6 +888,12 @@ export function bindEach(root, scope, opt, { getCtx, bindSubtree }) {
 
       const binding = bindSubtree(tmp, proxyScope)
 
+      // Sync data-* attributes from item scope. clearNodeForTemplate strips
+      // data-key but leaves other data-* attributes at their SSR values from
+      // the first row, so new entries cloned from that template would inherit
+      // stale attribute values. This pass writes the correct per-item values.
+      for (const n of nodes) syncDataAttrs(n, item)
+
       return {
         nodes,
         binding,
@@ -867,7 +904,10 @@ export function bindEach(root, scope, opt, { getCtx, bindSubtree }) {
           this.item = nextItem
           this.index = nextIndex
           for (const n of this.nodes) {
-            if (n instanceof Element) setItemContext(n, { item: nextItem, index: nextIndex, key, host })
+            if (n instanceof Element) {
+              setItemContext(n, { item: nextItem, index: nextIndex, key, host })
+              syncDataAttrs(n, nextItem)
+            }
           }
         }
       }

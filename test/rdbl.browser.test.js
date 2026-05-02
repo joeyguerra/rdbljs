@@ -487,6 +487,27 @@ const ROUTES = {
     window.__clickItem = i => document.querySelectorAll('li')[i].click()
     window.__getCaptured = () => JSON.stringify({ item: captured?.item, index: captured?.index, key: captured?.key })`
   ),
+
+  // ── data-* attribute syncing for new list entries ─────────────────────────
+  // When rdbljs auto-generates a template from the first SSR row,
+  // clearNodeForTemplate strips data-key but leaves other data-* attributes
+  // with their SSR values. New entries created from that template clone the
+  // stale attribute. This route reproduces the devchitchat bug where clicking
+  // the + button on a WS-added hub sent undefined as hub_id because
+  // data-hub-id on the <summary> still held the first SSR hub's id.
+
+  '/ssr-data-attrs-new-item': makePage(
+    `<div id="root" each="hubs" key="hub_id">
+      <div data-key="hub_1" class="hub-header">
+        <summary class="hub-name" data-hub-id="hub_1">Dev Hub</summary>
+      </div>
+    </div>`,
+    `const hubs = signal([{ hub_id: 'hub_1', name: 'Dev Hub' }])
+    bind(document.getElementById('root'), { hubs }, { dev: true })
+    window.__getDataHubId = i => document.querySelectorAll('.hub-name')[i]?.getAttribute('data-hub-id')
+    window.__addHub = () => hubs.set([...hubs(), { hub_id: 'hub_2', name: 'Design Hub' }])
+    window.__updateFirst = id => hubs.set([{ hub_id: id, name: 'Dev Hub' }])`
+  ),
 }
 
 // ── server + helpers ──────────────────────────────────────────────────────────
@@ -930,6 +951,30 @@ describe('getItemContext', () => {
       expect(captured.item).toEqual({ id: 2, name: 'Beta' })
       expect(captured.index).toBe(1)
       expect(captured.key).toBe(2)
+    })
+  )
+})
+
+describe('each — data-* attributes on child elements sync from item scope', () => {
+  test('SSR item retains correct data-hub-id after bind',
+    withPage('/ssr-data-attrs-new-item', async wv => {
+      expect(await wv.evaluate('window.__getDataHubId(0)')).toBe('hub_1')
+    })
+  )
+
+  test('new item gets its own data-hub-id, not stale value from SSR template',
+    withPage('/ssr-data-attrs-new-item', async wv => {
+      await wv.evaluate('window.__addHub()')
+      await flush(wv)
+      expect(await wv.evaluate('window.__getDataHubId(1)')).toBe('hub_2')
+    })
+  )
+
+  test('updating an existing item updates its data-hub-id',
+    withPage('/ssr-data-attrs-new-item', async wv => {
+      await wv.evaluate('window.__updateFirst("hub_1_updated")')
+      await flush(wv)
+      expect(await wv.evaluate('window.__getDataHubId(0)')).toBe('hub_1_updated')
     })
   )
 })
